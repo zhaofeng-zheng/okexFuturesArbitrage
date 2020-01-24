@@ -4,11 +4,9 @@ from ccxt import okex3
 from ccxt import RequestTimeout, ExchangeError, ExchangeNotAvailable, DDoSProtection
 from datetime import datetime
 from multiprocessing import Process
-import os
 
 exchange = okex3()
 depth_size = 10
-logger_dir_path = './log/'
 
 
 def handle_ddos_protection(func):
@@ -28,10 +26,6 @@ def http_exception_logger(func):
             try:
                 return func(*args, **kwargs)
             except (ExchangeError, ExchangeNotAvailable) as err:
-                if os.path.exists(logger_dir_path):
-                    pass
-                else:
-                    os.mkdir(logger_dir_path)
                 with open('./log/exception_log.txt', mode='a') as f:
                     f.write('time: {}, [Error] {}'.format(datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%fZ'), err))
                 print('http_exception_logger updated')
@@ -41,10 +35,6 @@ def http_exception_logger(func):
 def execute_logger(func):
     def inner(self, signal, account):
         func(self, signal)
-        if os.path.exists(logger_dir_path):
-            pass
-        else:
-            os.mkdir(logger_dir_path)
         with open(r'.\\log\\log.txt', mode='a') as f:
             f.write('time: {}, signal is {}, account is {}\n'.format(datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
                                                                    signal,
@@ -636,11 +626,26 @@ class FutureArbitrageur(okex3):
                 print(f'signal is {signal}')
                 print('重复信号，不需要平多')
 
+    def reset_contracts(self):
+        contracts = self.futuresGetInstruments()
+        length = len(contracts)
+        trade_coin = '-'.join(self.recent_contract.split('-')[0: 2])
+        contracts_lst = [contracts[index]['instrument_id'] for index in range(length)]
+        wanted_contracts = []
+        for contract in contracts_lst:
+            if contract.startswith(trade_coin):
+                wanted_contracts.append(contract)
+        self.recent_contract = wanted_contracts[0]
+        self.next_week_contract = wanted_contracts[1]
+        self.next_week_contract = wanted_contracts[2]
+        print(f'当周合约是{self.recent_contract}，次周合约是{self.next_week_contract}， 季度合约是{self.next_week_contract}')
+
     def recent_contract_rollover(self):
         while True:
             utcnow = datetime.utcnow()
             # 每周五当周合约交割以前rollover
             if utcnow.weekday() == 4 and utcnow.hour == 7 and utcnow.minute == 56:
+                self.reset_contracts()
                 pool = ThreadPool()
                 for apiKey, secret, password in zip(self.apiKeys_lst, self.secret_lst, self.password_lst):
                     self.apiKey = apiKey
@@ -648,7 +653,9 @@ class FutureArbitrageur(okex3):
                     self.password = password
                     recent_contract_long_position = self._get_contract_holding_number(instrument_id = self.recent_contract, direction='long')
                     recent_contract_short_position = self._get_contract_holding_number(instrument_id=self.recent_contract, direction='short')
+                    # 在做空价差
                     if recent_contract_long_position != 0 and recent_contract_short_position != 0:
+
                         recent_contract_position_info = self._get_position_info(instrument_id=self.recent_contract)
                         recent_contract_long_avg_cost = float(recent_contract_position_info['long_avg_cost'])
                         recent_contract_short_avg_cost = float(recent_contract_position_info['short_avg_cost'])
@@ -687,6 +694,7 @@ class FutureArbitrageur(okex3):
                             'size': next_week_hedge_size,
                             'price': next_contract_best_bid * 0.99
                         }, error_callback=self.error_callback)
+                    # 在做多价差
                     elif recent_contract_long_position == 0 and recent_contract_short_position != 0:
                         recent_contract_position_info = self._get_position_info(instrument_id=self.recent_contract)
                         recent_contract_short_avg_cost = float(recent_contract_position_info['short_avg_cost'])
