@@ -1,10 +1,8 @@
 from future_arbitrageur import FutureArbitrageur
 
-# apiKeys = ['8ec2e0c2-0807-438e-8140-1476387e4aad', 'fd31987e-3adf-4307-a5b8-89fe055a6fe8',  '9d76655a-ee88-4442-842d-610f226a716b']
-apiKeys = ['fc8e4be5-542b-44dc-a310-bd6f6cdce618']
-# secret = ['8947260FDAA0EC1246D56B4CEB03AC3C', '06485AFEF0C61D7E9F6B4C6626C60652', '3823E2802EF08634DF86417E4170CE8D']
-secret = ['8C61BB59A81A8768DD3DB48F9C9B5D03']
-password = ['zhengzhaofeng98']
+apiKeys = []
+secret = []
+password = []
 
 fa = FutureArbitrageur(apiKeys=apiKeys,
                        secret=secret,

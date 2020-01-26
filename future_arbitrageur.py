@@ -2,7 +2,7 @@ import time
 from multiprocessing.pool import ThreadPool
 from ccxt import okex3
 from ccxt import RequestTimeout, ExchangeError, ExchangeNotAvailable, DDoSProtection
-from datetime import datetime
+from datetime import datetime, timedelta
 from multiprocessing import Process
 
 exchange = okex3()
@@ -62,7 +62,7 @@ def obtain_futures_orderbook(instrument_id, size=depth_size):
 def obtain_futures_price_difference(contracts: tuple):
     pool = ThreadPool()
     results = pool.map(obtain_futures_orderbook, contracts)
-
+    print(results)
     week_contract_ticker: dict = results[0]
     week_best_bid_price = float(week_contract_ticker['bids'][0][0])
     week_best_ask_price = float(week_contract_ticker['asks'][0][0])
@@ -627,17 +627,14 @@ class FutureArbitrageur(okex3):
                 print('重复信号，不需要平多')
 
     def reset_contracts(self):
-        contracts = self.futuresGetInstruments()
-        length = len(contracts)
-        trade_coin = '-'.join(self.recent_contract.split('-')[0: 2])
-        contracts_lst = [contracts[index]['instrument_id'] for index in range(length)]
-        wanted_contracts = []
-        for contract in contracts_lst:
-            if contract.startswith(trade_coin):
-                wanted_contracts.append(contract)
-        self.recent_contract = wanted_contracts[0]
-        self.next_week_contract = wanted_contracts[1]
-        self.next_week_contract = wanted_contracts[2]
+        stem = '-'.join(self.recent_contract.split('-')[0:2]) + '-'
+        recent_contract_date = datetime.strptime(self.recent_contract, stem + '%y%m%d')
+        current_next_contract_date = recent_contract_date + timedelta(days=7)
+        new_next_contract_date = current_next_contract_date + timedelta(days=7)
+        new_next_contract = stem + new_next_contract_date.strftime('%y%m%d')
+        self.next_week_contract = new_next_contract
+        self.recent_contract = self.next_week_contract
+        print('合约重置完成')
         print(f'当周合约是{self.recent_contract}，次周合约是{self.next_week_contract}， 季度合约是{self.next_week_contract}')
 
     def recent_contract_rollover(self):
