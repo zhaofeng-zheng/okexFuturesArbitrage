@@ -18,18 +18,3 @@ fa = FutureArbitrageur(apiKeys=apiKeys,
 
 if __name__ == '__main__':
     fa.start()
-# fa.apiKey = fa.apiKeys_lst[0]
-# fa.secret = fa.secret_lst[0]
-# fa.password = fa.password_lst[0]
-# fa.recent_contract_position_obj = fa.pool.apply_async(func=fa._get_position, kwds={
-#     'instrument_id': fa.recent_contract,
-#     'direction': 'both'
-# })
-# fa.distant_contract_position_obj = fa.pool.apply_async(func=fa._get_position, kwds={
-#     'instrument_id': fa.distant_contract,
-#     'direction': 'both'
-# })
-# fa.account_equity_obj = fa.pool.apply_async(func=fa._get_account_equity, kwds={
-#     'instrument_id': fa.recent_contract
-# })
-# fa.execute((-1,))
