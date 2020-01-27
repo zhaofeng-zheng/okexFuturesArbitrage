@@ -27,7 +27,7 @@ def http_exception_logger(func):
                 return func(*args, **kwargs)
             except (ExchangeError, ExchangeNotAvailable) as err:
                 with open('./log/exception_log.txt', mode='a') as f:
-                    f.write('time: {}, [Error] {}'.format(datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%fZ'), err))
+                    f.write('time: {}, [Error] {}\n'.format(datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%fZ'), err))
                 print('http_exception_logger updated')
     return inner
 
@@ -75,12 +75,12 @@ def obtain_futures_price_difference(contracts: tuple):
     season_useful_ask_price = float(season_contract_ticker['asks'][depth_size - 1][0])
     # 做多当周，做空季度
     if week_best_ask_price <= season_best_bid_price:
-        effective_price_difference_pct = (season_useful_bid_price / week_useful_ask_price - 1) * 100
-        return effective_price_difference_pct
+        effective_price_difference_pct_open_short = (season_useful_bid_price / week_useful_ask_price - 1) * 100
+        return effective_price_difference_pct_open_short
     # 做多季度， 做空当周
     elif week_best_bid_price > season_best_ask_price:
-        effective_price_difference_pct = (season_useful_ask_price / week_useful_bid_price - 1) * 100
-        return effective_price_difference_pct
+        effective_price_difference_pct_open_long = (season_useful_ask_price / week_useful_bid_price - 1) * 100
+        return effective_price_difference_pct_open_long
 
 
 class FutureArbitrageur(okex3):
@@ -372,26 +372,30 @@ class FutureArbitrageur(okex3):
         '''
         if direction not in (3, 4):
             raise TypeError('direction should be either 3 or 4')
-        contract_remaining = size
-        while True:
-            self._place_order(instrument_id=instrument_id, direction=direction, size=contract_remaining, price=price,
-                              order_type=order_type)
-            if direction == 3:
-                print(f'平多{instrument_id}, 数量{contract_remaining}')
-                contract_remaining = self._get_contract_holding_number(instrument_id=instrument_id, direction='long')
-            elif direction == 4:
-                print(f'平空{instrument_id}, 数量{contract_remaining}')
-                contract_remaining = self._get_contract_holding_number(instrument_id=instrument_id, direction='short')
-            if contract_remaining == 0:
-                print(f'平仓完成， {instrument_id}, size:{size}, direction:{direction}')
-                return
-            else:
+        with open('./log/log.txt', mode='a') as logger:
+            contract_remaining = size
+            while True:
+                self._place_order(instrument_id=instrument_id, direction=direction, size=contract_remaining, price=price,
+                                  order_type=order_type)
                 if direction == 3:
-                    price = float(self._fetch_futures_ticker(instrument_id=instrument_id)['best_bid']) * 0.99
+                    logger.write(f'平多{instrument_id}, 数量{contract_remaining}')
+                    print(f'平多{instrument_id}, 数量{contract_remaining}')
+                    contract_remaining = self._get_contract_holding_number(instrument_id=instrument_id, direction='long')
                 elif direction == 4:
-                    price = float(self._fetch_futures_ticker(instrument_id=instrument_id)['best_ask']) * 1.01
+                    logger.write(f'平空{instrument_id}, 数量{contract_remaining}')
+                    print(f'平空{instrument_id}, 数量{contract_remaining}')
+                    contract_remaining = self._get_contract_holding_number(instrument_id=instrument_id, direction='short')
+                if contract_remaining == 0:
+                    logger.write(f'平仓完成， {instrument_id}, size:{size}, direction:{direction}')
+                    print(f'平仓完成， {instrument_id}, size:{size}, direction:{direction}')
+                    return
                 else:
-                    raise TypeError('direction should be either 3 or 4')
+                    if direction == 3:
+                        price = float(self._fetch_futures_ticker(instrument_id=instrument_id)['best_bid']) * 0.99
+                    elif direction == 4:
+                        price = float(self._fetch_futures_ticker(instrument_id=instrument_id)['best_ask']) * 1.01
+                    else:
+                        raise TypeError('direction should be either 3 or 4')
 
     def _open_position_FOK(self, *, instrument_id: str, direction: int, size: int, price: float, order_type=2):
         '''
@@ -403,37 +407,41 @@ class FutureArbitrageur(okex3):
         '''
         if direction not in (1, 2):
             raise TypeError('direction should be either 1 or 2')
-        contract_remaining = size
-        while True:
-            self._place_order(instrument_id=instrument_id, direction=direction, size=contract_remaining, price=price,
-                              order_type=order_type)
-            if direction == 1:
-                print(f'做多{instrument_id}, 数量{contract_remaining}')
-                position_opened = self._get_contract_holding_number(instrument_id=instrument_id, direction='long')
-                contract_remaining = size - position_opened
-            elif direction == 2:
-                print(f'做空{instrument_id}, 数量{contract_remaining}')
-                position_opened = self._get_contract_holding_number(instrument_id=instrument_id, direction='short')
-                contract_remaining = size - position_opened
-            if contract_remaining <= 0:
-                print(f'开仓完成, {instrument_id}, size:{size}, direction:{direction}')
-                return
-            else:
+        with open(f'./log/log.txt', mode='a') as logger:
+            contract_remaining = size
+            while True:
+                self._place_order(instrument_id=instrument_id, direction=direction, size=contract_remaining, price=price,
+                                  order_type=order_type)
                 if direction == 1:
-                    price = float(self._fetch_futures_ticker(instrument_id=instrument_id)['best_ask']) * 1.01
+                    logger.write(f'做多{instrument_id}, 数量{contract_remaining}')
+                    print(f'做多{instrument_id}, 数量{contract_remaining}')
+                    position_opened = self._get_contract_holding_number(instrument_id=instrument_id, direction='long')
+                    contract_remaining = size - position_opened
                 elif direction == 2:
-                    price = float(self._fetch_futures_ticker(instrument_id=instrument_id)['best_bid']) * 0.99
+                    logger.write(f'做空{instrument_id}, 数量{contract_remaining}')
+                    print(f'做空{instrument_id}, 数量{contract_remaining}')
+                    position_opened = self._get_contract_holding_number(instrument_id=instrument_id, direction='short')
+                    contract_remaining = size - position_opened
+                if contract_remaining <= 0:
+                    logger.write(f'开仓完成, {instrument_id}, size:{size}, direction:{direction}')
+                    print(f'开仓完成, {instrument_id}, size:{size}, direction:{direction}')
+                    return
                 else:
-                    raise TypeError('direction should be either 3 or 4')
+                    if direction == 1:
+                        price = float(self._fetch_futures_ticker(instrument_id=instrument_id)['best_ask']) * 1.01
+                    elif direction == 2:
+                        price = float(self._fetch_futures_ticker(instrument_id=instrument_id)['best_bid']) * 0.99
+                    else:
+                        raise TypeError('direction should be either 3 or 4')
 
     @execute_logger # execute = execute_logger(execute)
     def execute(self, signal: tuple):
         pool = ThreadPool()
         if signal == (-1,):
-            # 获取当周合约多单， index 0 表示多头， 1 表示空头
-            recent_contract_long_position = self.recent_contract_position_obj.get()[0]
+            # 获取当周合约空单， index 0 表示多头， 1 表示空头
+            recent_contract_short_position = self.recent_contract_position_obj.get()[1]
             # 只有没开仓才会执行
-            if recent_contract_long_position == 0:
+            if recent_contract_short_position == 0:
                 # 1. 平季度空单
                 distant_contract_short_position = self.distant_contract_position_obj.get()[1]
                 if distant_contract_short_position != 0:
@@ -487,10 +495,10 @@ class FutureArbitrageur(okex3):
                 print(f'signal is {signal}')
                 print('重复信号， 做空不执行')
         elif signal == (1,):
-            # 获取当周合约多单， index 0 表示多头， 1 表示空头
-            recent_contract_long_position = self.recent_contract_position_obj.get()[1]
+            # 获取当周合约空单， index 0 表示多头， 1 表示空头
+            recent_contract_short_position = self.recent_contract_position_obj.get()[1]
             # 只有没开仓才会执行
-            if recent_contract_long_position == 0:
+            if recent_contract_short_position == 0:
                 # 1. 平季度空单
                 distant_contract_short_position = self.distant_contract_position_obj.get()[1]
                 if distant_contract_short_position != 0:
@@ -542,22 +550,22 @@ class FutureArbitrageur(okex3):
                                                                        (self.recent_contract, self.distant_contract))
             recent_contract_best_ask = float(recent_contract_ticker['best_ask'])
             recent_contract_best_bid = float(recent_contract_ticker['best_bid'])
-            # 这个if是为了避免重复信号的，只有在当周有持多仓，才有平仓，以及开套期保值仓位的必要。
-            if recent_contract_long_position != 0:
-                # 平多当周
+            # 这个if是为了避免重复信号的，只有在当周有持空仓，才有平仓，以及开套期保值仓位的必要。
+            if recent_contract_short_position != 0:
+                # 平空当周对冲
                 pool.apply_async(self._close_position_FOK, kwds={
                     'instrument_id': self.recent_contract,
-                    'direction': 3,
-                    'size': recent_contract_long_position,
-                    'price': recent_contract_best_bid * 0.99
+                    'direction': 4,
+                    'size': recent_contract_short_position,
+                    'price': recent_contract_best_ask * 1.01
                 }, error_callback=self.error_callback)
-                # 平空当周对冲
-                if recent_contract_short_position != 0:
+                if recent_contract_long_position != 0:
+                    # 平多当周
                     pool.apply_async(self._close_position_FOK, kwds={
                         'instrument_id': self.recent_contract,
-                        'direction': 4,
-                        'size': recent_contract_short_position,
-                        'price': recent_contract_best_ask * 1.01
+                        'direction': 3,
+                        'size': recent_contract_long_position,
+                        'price': recent_contract_best_bid * 0.99
                     }, error_callback=self.error_callback)
                 # 平空季度
                 distant_contract_best_ask = float(distant_contract_ticker['best_ask'])
@@ -584,7 +592,6 @@ class FutureArbitrageur(okex3):
             else:
                 print(f'signal is {signal}')
                 print('重复信号，不需要平空')
-
         elif signal == (1, 0):
             recent_contract_short_position = self.recent_contract_position_obj.get()[1]
             distant_contract_long_position = self.distant_contract_position_obj.get()[0]
@@ -724,5 +731,6 @@ class FutureArbitrageur(okex3):
     @staticmethod
     def error_callback(error):
         print('[Error callback]', error, '\n')
+        with open('./log/multithreading_error.txt', mode='a') as logger:
+            logger.write('time: {}, [Error] {}\n'.format(datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%fZ'), str(error)))
         return
-
