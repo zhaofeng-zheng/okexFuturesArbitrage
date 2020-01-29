@@ -18,9 +18,10 @@ futures_contracts = []
 length = len(contracts)
 for index in range(0, length, 3):
     week_contract_id = contracts[index]['instrument_id']
+    next_week_contract_id = contracts[index + 1]['instrument_id']
     season_contract_id = contracts[index + 2]['instrument_id']
-    if week_contract_id.split('-')[0] == 'BTC' and week_contract_id.split('-')[1] == season_contract_id.split('-')[1] == 'USD':
-        futures_contracts.append((week_contract_id, season_contract_id))
+    if week_contract_id.split('-')[0] in ('BTC', 'ETH', 'EOS', 'BSV', 'BCH') and week_contract_id.split('-')[1] == season_contract_id.split('-')[1] == 'USD':
+        futures_contracts.append((week_contract_id, next_week_contract_id, season_contract_id))
 futures_contracts.sort(key=lambda tple: tple[0][:3])
 
 
@@ -47,7 +48,6 @@ def obtain_futures_price_difference(contracts: tuple):
             continue
         pool = ThreadPool()
         results = pool.map(obtain_futures_ticker, contracts)
-
         week_contract_ticker: dict = results[0]
         week_best_bid_price = float(week_contract_ticker['bids'][0][0])
         week_best_ask_price = float(week_contract_ticker['asks'][0][0])
@@ -55,7 +55,14 @@ def obtain_futures_price_difference(contracts: tuple):
         week_useful_ask_price = float(week_contract_ticker['asks'][depth_size-1][0])
         week_bid_depth = sum([int(week_contract_ticker['bids'][i][1]) for i in range(depth_size)])
         week_ask_depth = sum([int(week_contract_ticker['asks'][i][1]) for i in range(depth_size)])
-        season_contract_ticker: dict = results[1]
+        next_week_contract_ticker: dict = results[1]
+        next_week_best_bid_price = float(next_week_contract_ticker['bids'][0][0])
+        next_week_best_ask_price = float(next_week_contract_ticker['asks'][0][0])
+        next_week_useful_bid_price = float(next_week_contract_ticker['bids'][depth_size-1][0])
+        next_week_useful_ask_price = float(next_week_contract_ticker['asks'][depth_size-1][0])
+        next_week_bid_depth = sum([int(next_week_contract_ticker['bids'][i][1]) for i in range(depth_size)])
+        next_week_ask_depth = sum([int(next_week_contract_ticker['asks'][i][1]) for i in range(depth_size)])
+        season_contract_ticker: dict = results[2]
         season_best_bid_price = float(season_contract_ticker['bids'][0][0])
         season_best_ask_price = float(season_contract_ticker['asks'][0][0])
         season_useful_bid_price = float(season_contract_ticker['bids'][depth_size-1][0])
@@ -65,21 +72,27 @@ def obtain_futures_price_difference(contracts: tuple):
         timestamp = season_contract_ticker['timestamp']
         timestamp = datetime.strptime(timestamp, '%Y-%m-%dT%H:%M:%S.%fZ') + timedelta(hours=11)
         timestamp = timestamp.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-        # 做多当周，做空季度
         if week_best_ask_price <= season_best_bid_price:
-            effective_price_difference_pct = (season_useful_bid_price / week_useful_ask_price - 1) * 100
-        # 做多季度， 做空当周
+            eff_w_s_pd = (season_useful_bid_price / week_useful_ask_price - 1) * 100
+            print(f'{contracts[0]}, {contracts[2]} pd is {eff_w_s_pd}')
         elif week_best_bid_price > season_best_ask_price:
-            effective_price_difference_pct = (season_useful_ask_price / week_useful_bid_price - 1) * 100
-        print(f'{contracts} pd is {effective_price_difference_pct}')
+            eff_w_s_pd = (season_useful_ask_price / week_useful_bid_price - 1) * 100
+            print(f'{contracts[0]}, {contracts[2]} pd is {eff_w_s_pd}')
+        if next_week_best_ask_price <= season_best_bid_price:
+            eff_nw_s_pd = (season_useful_bid_price / next_week_useful_ask_price - 1) * 100
+            print(f'{contracts[1]}, {contracts[2]} pd is {eff_nw_s_pd}')
+        elif next_week_best_bid_price > season_best_ask_price:
+            eff_nw_s_pd = (season_useful_ask_price / next_week_useful_bid_price - 1) * 100
+            print(f'{contracts[1]}, {contracts[2]} pd is {eff_nw_s_pd}')
         df = pd.DataFrame()
-        df = df.append([[timestamp, effective_price_difference_pct, week_bid_depth, week_ask_depth, season_bid_depth,
-                         season_ask_depth]])
+        df = df.append([[timestamp, eff_w_s_pd, eff_nw_s_pd, week_bid_depth, week_ask_depth, next_week_bid_depth,
+                         next_week_ask_depth, season_bid_depth, season_ask_depth]])
         df.rename(
-            {0: 'time', 1: 'price_difference_pct (%)', 2: 'week_bid_depth', 3: 'week_ask_depth', 4: 'season_bid_depth',
-             5: 'season_ask_depth'},
-            inplace=True, axis='columns')
-        filePath = Path().parent / 'data' / (contracts[0] + '-' + contracts[1] + ' price difference.csv')
+            {0: 'time', 1: f'{contracts[0]} {contracts[2]}pd pct (%)',
+             2: f'{contracts[1]} {contracts[2]} pd pct', 3: 'week_bid_depth',
+             4: 'week_ask_depth', 5: 'next_week_bid_depth', 6: 'next_week_ask_depth', 7: 'season_bid_depth',
+             8: 'season_ask_depth'}, inplace=True, axis='columns')
+        filePath = Path().parent / 'data' / (contracts[0] + '-' + contracts[1] + '-' + contracts[2] + ' price difference.csv')
         fileExists = filePath.exists()
         if fileExists:
             try:
