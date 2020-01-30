@@ -5,6 +5,7 @@ from ccxt import okex3
 from ccxt import RequestTimeout, ExchangeError, ExchangeNotAvailable, DDoSProtection
 import datetime
 from multiprocessing import Process
+import _io
 exchange = okex3()
 depth_size = 10
 
@@ -130,7 +131,8 @@ class FutureArbitrageur(okex3):
             price_difference1 = obtain_futures_price_difference((self.recent_contract, self.distant_contract))
             # 程序入口
             self.signal_generator(pd0=price_difference0, pd1=price_difference1)
-            print('prvious pd is {:.4f} >>> current pd is {:.4f}\n'.format(price_difference0, price_difference1))
+            print('{} and {}, prvious pd is {:.4f} >>> current pd is {:.4f}\n'.format(self.recent_contract, self.distant_contract,
+                                                                                      price_difference0, price_difference1))
             price_difference0 = price_difference1
 
     def signal_generator(self, *, pd0, pd1):
@@ -385,8 +387,10 @@ class FutureArbitrageur(okex3):
                     return
                 else:
                     if direction == 3:
+                        logger.write(f'平多{instrument_id}, 无法全部成交，已被系统撤单，并准备重新下单\n')
                         price = float(self._fetch_futures_ticker(instrument_id=instrument_id)['best_bid']) * 0.99
                     elif direction == 4:
+                        logger.write(f'平空{instrument_id}, 无法全部成交，已被系统扯淡，并准备重新下单\n')
                         price = float(self._fetch_futures_ticker(instrument_id=instrument_id)['best_ask']) * 1.01
                     else:
                         raise TypeError('direction should be either 3 or 4')
@@ -422,13 +426,16 @@ class FutureArbitrageur(okex3):
                     return
                 else:
                     if direction == 1:
+                        logger.write(f'做多{instrument_id}无法全部成交，已经被撤销，正准备获得新价格并重新下单\n')
                         price = float(self._fetch_futures_ticker(instrument_id=instrument_id)['best_ask']) * 1.01
                     elif direction == 2:
+                        logger.write(f'做空{instrument_id}无法全部成交，已经被撤销，正准备获得新价格并重新下单\n')
                         price = float(self._fetch_futures_ticker(instrument_id=instrument_id)['best_bid']) * 0.99
                     else:
                         raise TypeError('direction should be either 3 or 4')
 
     def execute(self, signal: tuple):
+        # f: _io.TextIOWrapper = open('./log/log.txt', mode='a')
         pool = ThreadPool()
         if signal == (-1,):
             # 获取当周合约空单， index 0 表示多头， 1 表示空头
@@ -483,7 +490,7 @@ class FutureArbitrageur(okex3):
                 pool.close()
                 pool.join()
                 f = open('./log/log.txt', mode='a')
-                f.write('\n\n')
+                f.write('\n\n\n\n\n')
                 f.close()
                 print(f'signal is {signal}')
                 print('做空价差完成')
@@ -534,7 +541,7 @@ class FutureArbitrageur(okex3):
                 pool.close()
                 pool.join()
                 f = open('./log/log.txt', mode='a')
-                f.write('\n\n')
+                f.write('\n\n\n\n\n')
                 f.close()
                 print(f'signal is {signal}')
                 print('做多价差完成')
@@ -586,7 +593,7 @@ class FutureArbitrageur(okex3):
                     self._open_position_FOK(instrument_id=self.distant_contract, direction=2, size=hedge_size,
                                             price=distant_contract_best_bid * 0.99)
                 f = open('./log/log.txt', mode='a')
-                f.write('\n\n')
+                f.write('\n\n\n\n\n')
                 f.close()
                 print(f'signal is {signal}')
                 print('完成平空')
@@ -629,7 +636,7 @@ class FutureArbitrageur(okex3):
                     self._open_position_FOK(instrument_id=self.distant_contract, direction=2, size=hedge_size,
                                             price=distant_contract_best_bid * 0.99)
                 f = open('./log/log.txt', mode='a')
-                f.write('\n\n')
+                f.write('\n\n\n\n\n')
                 f.close()
                 print(f'signal is {signal}')
                 print('完成平多')
@@ -692,9 +699,14 @@ class FutureArbitrageur(okex3):
         nearest_friday = today + datetime.timedelta(days=(4 - today.weekday()) % 7)
         nearest_friday_delivery_time = datetime.datetime.combine(nearest_friday, datetime.time(8, 0))
         recent_contract_date = nearest_friday
-        if nearest_friday_delivery_time > utcnow:
+        # 如果还没到这周五交割时间， 以及还没到周三， 那么就完成了
+        if nearest_friday_delivery_time > utcnow and today.weekday() < 2:
             pass
-        else:
+        # 如果没到这周五交割时间， 但是已经到了周三， 那么就要把当周变成次周
+        elif nearest_friday_delivery_time > utcnow and today.weekday() >= 2:
+            nearest_friday += datetime.timedelta(days=7)
+            recent_contract_date = nearest_friday
+        elif nearest_friday_delivery_time < utcnow and today.weekday() >= 2:
             nearest_friday += datetime.timedelta(days=7)
             recent_contract_date = nearest_friday
         next_week_contract_date = recent_contract_date + datetime.timedelta(days=7)
