@@ -1,10 +1,10 @@
 import time
+import calendar
 from multiprocessing.pool import ThreadPool
 from ccxt import okex3
 from ccxt import RequestTimeout, ExchangeError, ExchangeNotAvailable, DDoSProtection
-from datetime import datetime, timedelta
+import datetime
 from multiprocessing import Process
-
 exchange = okex3()
 depth_size = 10
 
@@ -27,20 +27,9 @@ def http_exception_logger(func):
                 return func(*args, **kwargs)
             except (ExchangeError, ExchangeNotAvailable) as err:
                 with open('./log/exception_log.txt', mode='a') as f:
-                    f.write('time: {}, [Error] {}\n'.format(datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%fZ'), err))
+                    f.write('time: {}, [Error] {}\n'.format(datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%fZ'), err))
                 print('http_exception_logger updated')
     return inner
-
-
-def execute_logger(func):
-    def inner(self, signal, account):
-        func(self, signal)
-        with open(r'.\\log\\log.txt', mode='a') as f:
-            f.write('time: {}, signal is {}, account is {}\n'.format(datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
-                                                                   signal,
-                                                                   account))
-    return inner
-
 
 @handle_ddos_protection
 @http_exception_logger # obtain_futures_orderbook = http_exception_logge(obtain_futures_orderbook)
@@ -84,7 +73,7 @@ def obtain_futures_price_difference(contracts: tuple):
 
 
 class FutureArbitrageur(okex3):
-    def __init__(self, *, apiKeys, secret, password, recent_contract, next_week_contract, distant_contract, leverage,
+    def __init__(self, *, apiKeys, secret, password, trade_coin, quote_coin,leverage,
                  contract_value, midline, grid_width, fetch_frequency=1):
         super().__init__()
         if apiKeys.__class__ is not str and secret.__class__ is not str and password is not str:
@@ -99,9 +88,14 @@ class FutureArbitrageur(okex3):
             self.apiKeys_lst = list((apiKeys,))
             self.secret_lst = list((secret,))
             self.password_lst = list((password,))
-        self.recent_contract = recent_contract
-        self.next_week_contract = next_week_contract
-        self.distant_contract = distant_contract
+        self.trade_coin = trade_coin.upper()
+        self.quote_coin = quote_coin.upper()
+
+        self.recent_contract = None
+        self.next_week_contract = None
+        self.distant_contract = None
+        self.synthesize_n_update_contracts()
+
         self.leverage = leverage
         self.contract_value = contract_value
         self.midline = midline
@@ -158,7 +152,7 @@ class FutureArbitrageur(okex3):
                 'instrument_id': self.recent_contract
             })
             # 平空
-            self.execute((-1, 0), account)
+            self.execute((-1, 0))
             print(f'account {account}')
         # 由下往上穿过中线， 平多价差
         elif pd1 > self.midline > pd0:
@@ -178,7 +172,7 @@ class FutureArbitrageur(okex3):
                 'instrument_id': self.recent_contract
             })
             # 平多
-            self.execute((1, 0), account)
+            self.execute((1, 0))
             print(f'account {account}')
 
         for i, (num_pos, num_neg) in enumerate(zip(range(1, len(self.apiKeys_lst) + 1),
@@ -201,7 +195,7 @@ class FutureArbitrageur(okex3):
                     'instrument_id': self.recent_contract
                 })
                 # 开空
-                self.execute((-1,), account)
+                self.execute((-1,))
                 print(f'account {account}')
             # 由上往下穿过网格， 做多价差
             elif pd1 < getattr(self, 'grid' + str(num_neg)) < pd0:
@@ -221,7 +215,7 @@ class FutureArbitrageur(okex3):
                     'instrument_id': self.recent_contract
                 })
                 # 开多
-                self.execute((1,), account)
+                self.execute((1,))
                 print(f'account {account}')
             # 由上往下穿过网格， 平空价差
             elif pd1 < getattr(self, 'grid' + str(num_pos)) < pd0:
@@ -242,7 +236,7 @@ class FutureArbitrageur(okex3):
                         'instrument_id': self.recent_contract
                     })
                     # 平空
-                    self.execute((-1, 0), account)
+                    self.execute((-1, 0))
                     print(f'account {account}')
                 else:
                     continue
@@ -265,7 +259,7 @@ class FutureArbitrageur(okex3):
                         'instrument_id': self.recent_contract
                     })
                     # 平多
-                    self.execute((1, 0), account)
+                    self.execute((1, 0))
                     print(f'account {account}')
                 else:
                     continue
@@ -378,15 +372,15 @@ class FutureArbitrageur(okex3):
                 self._place_order(instrument_id=instrument_id, direction=direction, size=contract_remaining, price=price,
                                   order_type=order_type)
                 if direction == 3:
-                    logger.write(f'平多{instrument_id}, 数量{contract_remaining}')
+                    logger.write(f'平多{instrument_id}, 数量{contract_remaining}\n')
                     print(f'平多{instrument_id}, 数量{contract_remaining}')
                     contract_remaining = self._get_contract_holding_number(instrument_id=instrument_id, direction='long')
                 elif direction == 4:
-                    logger.write(f'平空{instrument_id}, 数量{contract_remaining}')
+                    logger.write(f'平空{instrument_id}, 数量{contract_remaining}\n')
                     print(f'平空{instrument_id}, 数量{contract_remaining}')
                     contract_remaining = self._get_contract_holding_number(instrument_id=instrument_id, direction='short')
                 if contract_remaining == 0:
-                    logger.write(f'平仓完成， {instrument_id}, size:{size}, direction:{direction}')
+                    logger.write(f'平仓完成， {instrument_id}, size:{size}, direction:{direction}, time: {datetime.datetime.now()}\n\n')
                     print(f'平仓完成， {instrument_id}, size:{size}, direction:{direction}')
                     return
                 else:
@@ -413,17 +407,17 @@ class FutureArbitrageur(okex3):
                 self._place_order(instrument_id=instrument_id, direction=direction, size=contract_remaining, price=price,
                                   order_type=order_type)
                 if direction == 1:
-                    logger.write(f'做多{instrument_id}, 数量{contract_remaining}')
+                    logger.write(f'做多{instrument_id}, 数量{contract_remaining}\n')
                     print(f'做多{instrument_id}, 数量{contract_remaining}')
                     position_opened = self._get_contract_holding_number(instrument_id=instrument_id, direction='long')
                     contract_remaining = size - position_opened
                 elif direction == 2:
-                    logger.write(f'做空{instrument_id}, 数量{contract_remaining}')
+                    logger.write(f'做空{instrument_id}, 数量{contract_remaining}\n')
                     print(f'做空{instrument_id}, 数量{contract_remaining}')
                     position_opened = self._get_contract_holding_number(instrument_id=instrument_id, direction='short')
                     contract_remaining = size - position_opened
                 if contract_remaining <= 0:
-                    logger.write(f'开仓完成, {instrument_id}, size:{size}, direction:{direction}')
+                    logger.write(f'开仓完成, {instrument_id}, size:{size}, direction:{direction}, time: {datetime.datetime.now()}\n\n')
                     print(f'开仓完成, {instrument_id}, size:{size}, direction:{direction}')
                     return
                 else:
@@ -434,7 +428,6 @@ class FutureArbitrageur(okex3):
                     else:
                         raise TypeError('direction should be either 3 or 4')
 
-    @execute_logger # execute = execute_logger(execute)
     def execute(self, signal: tuple):
         pool = ThreadPool()
         if signal == (-1,):
@@ -489,6 +482,9 @@ class FutureArbitrageur(okex3):
                     }, error_callback=self.error_callback)
                 pool.close()
                 pool.join()
+                f = open('./log/log.txt', mode='a')
+                f.write('\n\n')
+                f.close()
                 print(f'signal is {signal}')
                 print('做空价差完成')
             else:
@@ -537,6 +533,9 @@ class FutureArbitrageur(okex3):
                     }, error_callback=self.error_callback)
                 pool.close()
                 pool.join()
+                f = open('./log/log.txt', mode='a')
+                f.write('\n\n')
+                f.close()
                 print(f'signal is {signal}')
                 print('做多价差完成')
             else:
@@ -586,6 +585,9 @@ class FutureArbitrageur(okex3):
                 if hedge_size != 0:
                     self._open_position_FOK(instrument_id=self.distant_contract, direction=2, size=hedge_size,
                                             price=distant_contract_best_bid * 0.99)
+                f = open('./log/log.txt', mode='a')
+                f.write('\n\n')
+                f.close()
                 print(f'signal is {signal}')
                 print('完成平空')
             # 如果recent_contract_long_position是0， 当周不持仓，那么就不需要平仓，也不需要再重复开套期保值仓位
@@ -626,6 +628,9 @@ class FutureArbitrageur(okex3):
                 if hedge_size != 0:
                     self._open_position_FOK(instrument_id=self.distant_contract, direction=2, size=hedge_size,
                                             price=distant_contract_best_bid * 0.99)
+                f = open('./log/log.txt', mode='a')
+                f.write('\n\n')
+                f.close()
                 print(f'signal is {signal}')
                 print('完成平多')
             # 当周不持空单就不执行，防止重复操作
@@ -633,29 +638,81 @@ class FutureArbitrageur(okex3):
                 print(f'signal is {signal}')
                 print('重复信号，不需要平多')
 
-    def reset_contracts(self):
-        stem = '-'.join(self.recent_contract.split('-')[0:2]) + '-'
-        recent_contract_date = datetime.strptime(self.recent_contract, stem + '%y%m%d')
-        current_next_contract_date = recent_contract_date + timedelta(days=7)
-        new_next_contract_date = current_next_contract_date + timedelta(days=7)
-        new_next_contract = stem + new_next_contract_date.strftime('%y%m%d')
-        self.next_week_contract = new_next_contract
-        self.recent_contract = self.next_week_contract
-        print('合约重置完成')
-        print(f'当周合约是{self.recent_contract}，次周合约是{self.next_week_contract}， 季度合约是{self.next_week_contract}')
+    # 将对象的当周，次周，季度合约全部更新
+    def synthesize_n_update_contracts(self):
+        # ==生成季度合约
+        # 设置根， 例如 BTC-USD- 或 ETH-USD-
+        stem = self.trade_coin + '-' + self.quote_coin + '-'
+        # 生成一个世界标准时间的datetime对象
+        utcnow = datetime.datetime.utcnow()
+        c = calendar.Calendar()
+        # 季度合约在3月， 6月， 9月， 12月的最后一个周五交割
+        distant_contract_months = (3, 6, 9, 12)
+        index = 0
+        # 找到离现在最近的交割月份
+        for i in range(len(distant_contract_months)):
+            if utcnow.month > distant_contract_months[i]:
+                index += 1
+                continue
+            else:
+                break
+        year = utcnow.year
+        nearest_delivery_month = distant_contract_months[index]
+        monthcal = c.monthdatescalendar(year, nearest_delivery_month)
+        # 3月， 6月， 9月， 12月距离现在最近的那个月的周五
+        # last_friday_date 是一个datetime.datetime.date对象， 必须将其转化为datetime.datetime对象
+        last_friday_delivery_date = [day for week in monthcal for day in week if\
+                       day.weekday() == calendar.FRIDAY and \
+                       day.month == nearest_delivery_month][-1]
+        last_friday_delivery_time = datetime.datetime.combine(last_friday_delivery_date, datetime.time(8, 0))
+        distant_contract_date = last_friday_delivery_date
+        # 如果计算出来的周五是在距离现在的未来， 那么就完成了
+        if last_friday_delivery_time > utcnow:
+            pass
+        # 如果计算出来的周五已经过了， 那么判断现在是否是12月， 如果是，那就加一年，同时把最近月份设置到三月
+        elif utcnow.month == 12 and last_friday_delivery_time < utcnow:
+            year += 1
+            nearest_delivery_month = distant_contract_months[0]
+            monthcal = c.monthdatescalendar(year, nearest_delivery_month)
+            last_friday_delivery_time = [day for week in monthcal for day in week if \
+                                day.weekday() == calendar.FRIDAY and \
+                                day.month == nearest_delivery_month][-1]
+            distant_contract_date = last_friday_delivery_time
+        # 如果现在不是12月（例如， 现在是3月31日，而离我最近的月份是3月， 最后一个周五是3月27日， 已经过了，那么就在加三个月）
+        elif utcnow.month != 12 and last_friday_delivery_time < utcnow:
+            nearest_delivery_month = distant_contract_months[index+1]
+            monthcal = c.monthdatescalendar(year, nearest_delivery_month)
+            last_friday_delivery_time = [day for week in monthcal for day in week if \
+                                day.weekday() == calendar.FRIDAY and \
+                                day.month == nearest_delivery_month][-1]
+            distant_contract_date = last_friday_delivery_time
+        self.distant_contract = distant_contract_date.strftime(stem + "%y%m%d")
+        # ==生成当周和次周合约
+        today = datetime.date.today()
+        nearest_friday = today + datetime.timedelta(days=(4 - today.weekday()) % 7)
+        nearest_friday_delivery_time = datetime.datetime.combine(nearest_friday, datetime.time(8, 0))
+        recent_contract_date = nearest_friday
+        if nearest_friday_delivery_time > utcnow:
+            pass
+        else:
+            nearest_friday += datetime.timedelta(days=7)
+            recent_contract_date = nearest_friday
+        next_week_contract_date = recent_contract_date + datetime.timedelta(days=7)
+        self.recent_contract = recent_contract_date.strftime(stem + "%y%m%d")
+        self.next_week_contract = next_week_contract_date.strftime(stem + '%y%m%d')
+        return
 
     def recent_contract_rollover(self):
         while True:
-            utcnow = datetime.utcnow()
+            utcnow = datetime.datetime.utcnow()
             # 每周五当周合约交割以前rollover
-            if utcnow.weekday() == 4 and utcnow.hour == 7 and utcnow.minute == 56:
-                self.reset_contracts()
-                pool = ThreadPool()
+            if utcnow.weekday() == 4 and utcnow.hour == 7 and 56 <= utcnow.minute <= 59:
                 for apiKey, secret, password in zip(self.apiKeys_lst, self.secret_lst, self.password_lst):
+                    pool = ThreadPool()
                     self.apiKey = apiKey
                     self.secret = secret
                     self.password = password
-                    recent_contract_long_position = self._get_contract_holding_number(instrument_id = self.recent_contract, direction='long')
+                    recent_contract_long_position = self._get_contract_holding_number(instrument_id=self.recent_contract, direction='long')
                     recent_contract_short_position = self._get_contract_holding_number(instrument_id=self.recent_contract, direction='short')
                     # 在做空价差
                     if recent_contract_long_position != 0 and recent_contract_short_position != 0:
@@ -721,16 +778,19 @@ class FutureArbitrageur(okex3):
                             'size': next_week_short_size,
                             'price': next_contract_best_bid * 0.99
                         }, error_callback=self.error_callback)
-                pool.close()
-                pool.join()
-                print('rollover 完成')
+                    pool.close()
+                    pool.join()
+                    print('rollover 完成')
             else:
                 print('没到时间')
                 time.sleep(60)
+                # 每60秒更新一次合约信息
+                self.synthesize_n_update_contracts()
 
     @staticmethod
     def error_callback(error):
         print('[Error callback]', error, '\n')
         with open('./log/multithreading_error.txt', mode='a') as logger:
-            logger.write('time: {}, [Error] {}\n'.format(datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%fZ'), str(error)))
+            logger.write('time: {}, [Error] {}\n'.format(datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
+                                                         str(error)))
         return
