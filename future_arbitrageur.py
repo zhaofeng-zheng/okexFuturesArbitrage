@@ -6,6 +6,8 @@ from ccxt import RequestTimeout, ExchangeError, ExchangeNotAvailable, DDoSProtec
 import datetime
 from multiprocessing import Process
 import _io
+
+
 exchange = okex3()
 depth_size = 10
 
@@ -92,6 +94,7 @@ class FutureArbitrageur(okex3):
         self.trade_coin = trade_coin.upper()
         self.quote_coin = quote_coin.upper()
 
+        self.expiring_contract = None
         self.recent_contract = None
         self.next_week_contract = None
         self.distant_contract = None
@@ -113,7 +116,7 @@ class FutureArbitrageur(okex3):
     def start(self):
         # /*
         # 程序入口
-        secondary_process = Process(target=self.recent_contract_rollover)
+        secondary_process = Process(target=self.expiring_contract_rollover)
         main_process = Process(target=self.monitor_price_difference)
         main_process.start()
         secondary_process.start()
@@ -596,11 +599,11 @@ class FutureArbitrageur(okex3):
                 f.write('\n\n\n\n\n')
                 f.close()
                 print(f'signal is {signal}')
-                print('完成平空')
+                print('完成平空价差')
             # 如果recent_contract_long_position是0， 当周不持仓，那么就不需要平仓，也不需要再重复开套期保值仓位
             else:
                 print(f'signal is {signal}')
-                print('重复信号，不需要平空')
+                print('重复信号，不需要平空价差')
         elif signal == (1, 0):
             recent_contract_short_position = self.recent_contract_position_obj.get()[1]
             distant_contract_long_position = self.distant_contract_position_obj.get()[0]
@@ -639,11 +642,11 @@ class FutureArbitrageur(okex3):
                 f.write('\n\n\n\n\n')
                 f.close()
                 print(f'signal is {signal}')
-                print('完成平多')
+                print('完成平多价差')
             # 当周不持空单就不执行，防止重复操作
             else:
                 print(f'signal is {signal}')
-                print('重复信号，不需要平多')
+                print('重复信号，不需要平多价差')
 
     # 将对象的当周，次周，季度合约全部更新
     def synthesize_n_update_contracts(self):
@@ -698,6 +701,7 @@ class FutureArbitrageur(okex3):
         today = datetime.date.today()
         nearest_friday = today + datetime.timedelta(days=(4 - today.weekday()) % 7)
         nearest_friday_delivery_time = datetime.datetime.combine(nearest_friday, datetime.time(8, 0))
+        expiring_contract_date = nearest_friday
         recent_contract_date = nearest_friday
         # 如果还没到这周五交割时间， 以及还没到周三， 那么就完成了
         if nearest_friday_delivery_time > utcnow and today.weekday() < 2:
@@ -708,13 +712,19 @@ class FutureArbitrageur(okex3):
             recent_contract_date = nearest_friday
         elif nearest_friday_delivery_time < utcnow and today.weekday() >= 2:
             nearest_friday += datetime.timedelta(days=7)
+            expiring_contract_date = nearest_friday
             recent_contract_date = nearest_friday
         next_week_contract_date = recent_contract_date + datetime.timedelta(days=7)
+        self.expiring_contract = expiring_contract_date.strftime(stem + "%y%m%d")
         self.recent_contract = recent_contract_date.strftime(stem + "%y%m%d")
         self.next_week_contract = next_week_contract_date.strftime(stem + '%y%m%d')
+        print(f'将要过期合约{self.expiring_contract}，'
+              f'当周合约{self.recent_contract}，'
+              f'次周合约{self.next_week_contract}，'
+              f'季度合约{self.distant_contract}')
         return
 
-    def recent_contract_rollover(self):
+    def expiring_contract_rollover(self):
         while True:
             utcnow = datetime.datetime.utcnow()
             # 每周五当周合约交割以前rollover
@@ -724,77 +734,77 @@ class FutureArbitrageur(okex3):
                     self.apiKey = apiKey
                     self.secret = secret
                     self.password = password
-                    recent_contract_long_position = self._get_contract_holding_number(instrument_id=self.recent_contract, direction='long')
-                    recent_contract_short_position = self._get_contract_holding_number(instrument_id=self.recent_contract, direction='short')
+                    #
+                    expiring_contract_long_position = self._get_contract_holding_number(instrument_id=self.expiring_contract, direction='long')
+                    expiring_contract_short_position = self._get_contract_holding_number(instrument_id=self.expiring_contract, direction='short')
                     # 在做空价差
-                    if recent_contract_long_position != 0 and recent_contract_short_position != 0:
-
-                        recent_contract_position_info = self._get_position_info(instrument_id=self.recent_contract)
-                        recent_contract_long_avg_cost = float(recent_contract_position_info['long_avg_cost'])
-                        recent_contract_short_avg_cost = float(recent_contract_position_info['short_avg_cost'])
-                        recent_contract_long_coin_equivalent = self.contract_value * recent_contract_long_position / recent_contract_long_avg_cost
-                        recent_contract_hedge_coin_equivalent = self.contract_value * recent_contract_short_position / recent_contract_short_avg_cost
-                        recent_contract_ticker = self._fetch_futures_ticker(instrument_id=self.recent_contract)
-                        recent_contract_best_bid = float(recent_contract_ticker['best_bid'])
-                        recent_contract_best_ask = float(recent_contract_ticker['best_ask'])
+                    if expiring_contract_long_position != 0 and expiring_contract_short_position != 0:
+                        expiring_contract_position_info = self._get_position_info(instrument_id=self.expiring_contract)
+                        expiring_contract_long_avg_cost = float(expiring_contract_position_info['long_avg_cost'])
+                        expiring_contract_short_avg_cost = float(expiring_contract_position_info['short_avg_cost'])
+                        expiring_contract_long_coin_equivalent = self.contract_value * expiring_contract_long_position / expiring_contract_long_avg_cost
+                        expiring_contract_hedge_coin_equivalent = self.contract_value * expiring_contract_short_position / expiring_contract_short_avg_cost
+                        expiring_contract_ticker = self._fetch_futures_ticker(instrument_id=self.expiring_contract)
+                        expiring_contract_best_bid = float(expiring_contract_ticker['best_bid'])
+                        expiring_contract_best_ask = float(expiring_contract_ticker['best_ask'])
                         pool.apply_async(func=self._close_position_FOK, kwds={
-                            'instrument_id': self.recent_contract,
+                            'instrument_id': self.expiring_contract,
                             'direction': 4,
-                            'size': recent_contract_short_position,
-                            'price': recent_contract_best_ask * 1.01
+                            'size': expiring_contract_short_position,
+                            'price': expiring_contract_best_ask * 1.01
                         }, error_callback=self.error_callback)
                         pool.apply_async(func=self._close_position_FOK, kwds={
-                            'instrument_id': self.recent_contract,
+                            'instrument_id': self.expiring_contract,
                             'direction': 3,
-                            'size': recent_contract_long_position,
-                            'price': recent_contract_best_bid * 0.99
+                            'size': expiring_contract_long_position,
+                            'price': expiring_contract_best_bid * 0.99
                         }, error_callback=self.error_callback)
-                        next_contract_ticker = self._fetch_futures_ticker(instrument_id=self.next_week_contract)
+                        next_contract_ticker = self._fetch_futures_ticker(instrument_id=self.recent_contract)
                         next_contract_best_bid = float(next_contract_ticker['best_bid'])
                         next_contract_best_ask = float(next_contract_ticker['best_ask'])
                         next_contract_last_price = float(next_contract_ticker['last'])
-                        next_week_long_size = round(recent_contract_long_coin_equivalent * next_contract_last_price/ self.contract_value)
-                        next_week_hedge_size = round(recent_contract_hedge_coin_equivalent * next_contract_last_price / self.contract_value)
+                        recent_long_size = round(expiring_contract_long_coin_equivalent * next_contract_last_price/ self.contract_value)
+                        recent_hedge_size = round(expiring_contract_hedge_coin_equivalent * next_contract_last_price / self.contract_value)
                         pool.apply_async(func=self._open_position_FOK, kwds={
-                            'instrument_id': self.next_week_contract,
+                            'instrument_id': self.recent_contract,
                             'direction': 1,
-                            'size': next_week_long_size,
+                            'size': recent_long_size,
                             'price': next_contract_best_ask * 1.01
                         }, error_callback=self.error_callback)
                         pool.apply_async(func=self._open_position_FOK, kwds={
-                            'instrument_id': self.next_week_contract,
+                            'instrument_id': self.recent_contract,
                             'direction': 2,
-                            'size': next_week_hedge_size,
+                            'size': recent_hedge_size,
                             'price': next_contract_best_bid * 0.99
                         }, error_callback=self.error_callback)
                     # 在做多价差
-                    elif recent_contract_long_position == 0 and recent_contract_short_position != 0:
-                        recent_contract_position_info = self._get_position_info(instrument_id=self.recent_contract)
-                        recent_contract_short_avg_cost = float(recent_contract_position_info['short_avg_cost'])
-                        recent_contract_short_coin_equivalent = self.contract_value * recent_contract_short_position / recent_contract_short_avg_cost
-                        recent_contract_ticker = self._fetch_futures_ticker(instrument_id=self.recent_contract)
-                        recent_contract_best_ask = float(recent_contract_ticker['best_ask'])
+                    elif expiring_contract_long_position == 0 and expiring_contract_short_position != 0:
+                        expiring_contract_position_info = self._get_position_info(instrument_id=self.expiring_contract)
+                        expiring_contract_short_avg_cost = float(expiring_contract_position_info['short_avg_cost'])
+                        expiring_contract_short_coin_equivalent = self.contract_value * expiring_contract_short_position / expiring_contract_short_avg_cost
+                        expiring_contract_ticker = self._fetch_futures_ticker(instrument_id=self.expiring_contract)
+                        expiring_contract_best_ask = float(expiring_contract_ticker['best_ask'])
                         pool.apply_async(func=self._close_position_FOK, kwds={
-                            'instrument_id': self.recent_contract,
+                            'instrument_id': self.expiring_contract,
                             'direction': 4,
-                            'size': recent_contract_short_position,
-                            'price': recent_contract_best_ask * 1.01
+                            'size': expiring_contract_short_position,
+                            'price': expiring_contract_best_ask * 1.01
                         }, error_callback=self.error_callback)
-                        next_contract_ticker = self._fetch_futures_ticker(instrument_id=self.next_week_contract)
+                        next_contract_ticker = self._fetch_futures_ticker(instrument_id=self.recent_contract)
                         next_contract_best_bid = float(next_contract_ticker['best_bid'])
                         next_contract_last_price = float(next_contract_ticker['last'])
-                        next_week_short_size = round(recent_contract_short_coin_equivalent * next_contract_last_price / self.contract_value)
+                        recent_short_size = round(expiring_contract_short_coin_equivalent * next_contract_last_price / self.contract_value)
                         pool.apply_async(func=self._open_position_FOK, kwds={
-                            'instrument_id': self.next_week_contract,
+                            'instrument_id': self.recent_contract,
                             'direction': 2,
-                            'size': next_week_short_size,
+                            'size': recent_short_size,
                             'price': next_contract_best_bid * 0.99
                         }, error_callback=self.error_callback)
                     pool.close()
                     pool.join()
                     print('rollover 完成')
             else:
-                print('没到时间')
+                print('rollover，没到时间')
                 time.sleep(60)
                 # 每60秒更新一次合约信息
                 self.synthesize_n_update_contracts()
