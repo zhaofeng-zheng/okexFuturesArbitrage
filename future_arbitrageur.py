@@ -1,12 +1,12 @@
+__author__ = "Zhaofeng Zheng"
+__license__ = "MIT"
 import time
 import calendar
 from multiprocessing.pool import ThreadPool
 from ccxt import okex3
-from ccxt import RequestTimeout, ExchangeError, ExchangeNotAvailable, DDoSProtection
+from ccxt import RequestTimeout, ExchangeError, ExchangeNotAvailable, DDoSProtection, NetworkError
 import datetime
 from multiprocessing import Process
-import _io
-
 
 exchange = okex3()
 depth_size = 10
@@ -17,8 +17,8 @@ def handle_ddos_protection(func):
         while True:
             try:
                 return func(*args, **kwargs)
-            except DDoSProtection as err:
-                print('DDoS protection{}, retry,,,'.format(err))
+            except DDoSProtection:
+                print('DDoS protection from {}, retry,,,'.format(func.__name__))
                 time.sleep(5)
     return inner
 
@@ -28,33 +28,30 @@ def http_exception_logger(func):
         while True:
             try:
                 return func(*args, **kwargs)
-            except (ExchangeError, ExchangeNotAvailable) as err:
-                with open('./log/exception_log.txt', mode='a') as f:
-                    f.write('time: {}, [Error] {}\n'.format(datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%fZ'), err))
-                print('http_exception_logger updated')
+            except (ExchangeError, ExchangeNotAvailable, RequestTimeout, NetworkError) as err:
+                print(f"error message from {func.__name__}, {err}")
+                continue
+    inner.__name__ = func.__name__
     return inner
+
 
 @handle_ddos_protection
 @http_exception_logger # obtain_futures_orderbook = http_exception_logge(obtain_futures_orderbook)
 def obtain_futures_orderbook(instrument_id, size=depth_size):
-    while True:
-        try:
-            ticker = exchange.futuresGetInstrumentsInstrumentIdBook(
-                {
-                    'instrument_id': instrument_id,
-                    'size': size
-                }
-            )
-            return ticker
-        except RequestTimeout as err:
-            print(err)
-            continue
+    ticker = exchange.futuresGetInstrumentsInstrumentIdBook(
+        {
+            'instrument_id': instrument_id,
+            'size': size
+        }
+    )
+    return ticker
 
 
 def obtain_futures_price_difference(contracts: tuple):
     pool = ThreadPool()
     results = pool.map(obtain_futures_orderbook, contracts)
     print(results)
+    pool.close()
     week_contract_ticker: dict = results[0]
     week_best_bid_price = float(week_contract_ticker['bids'][0][0])
     week_best_ask_price = float(week_contract_ticker['asks'][0][0])
@@ -94,7 +91,6 @@ class FutureArbitrageur(okex3):
         self.trade_coin = trade_coin.upper()
         self.quote_coin = quote_coin.upper()
 
-        self.expiring_contract = None
         self.recent_contract = None
         self.next_week_contract = None
         self.distant_contract = None
@@ -116,7 +112,7 @@ class FutureArbitrageur(okex3):
     def start(self):
         # /*
         # 程序入口
-        secondary_process = Process(target=self.expiring_contract_rollover)
+        secondary_process = Process(target=self.recent_contract_rollover)
         main_process = Process(target=self.monitor_price_difference)
         main_process.start()
         secondary_process.start()
@@ -271,22 +267,22 @@ class FutureArbitrageur(okex3):
             else:
                 continue
 
+    @handle_ddos_protection
+    @http_exception_logger
     def _fetch_futures_ticker(self, instrument_id: str) -> dict:
-        while True:
-            try:
-                return self.futuresGetInstrumentsInstrumentIdTicker({
-                    'instrument_id': instrument_id
-                })
-            except RequestTimeout as err:
-                print(f'Timeout while fetching {instrument_id} ticker, retry.... [Error]: {err}')
-                continue
+        return self.futuresGetInstrumentsInstrumentIdTicker({
+            'instrument_id': instrument_id
+        })
 
+    @handle_ddos_protection
     @http_exception_logger
     def _get_position_info(self, instrument_id: str) -> dict:
         return self.futuresGetInstrumentIdPosition({
             'instrument_id': instrument_id
         })['holding'][0]
 
+    @handle_ddos_protection
+    @http_exception_logger
     def _get_contract_holding_number(self, *, instrument_id: str, direction: str) -> (int, list):
         ''':arg direction: long or short position (can take long or short)'''
         while True:
@@ -297,9 +293,6 @@ class FutureArbitrageur(okex3):
                     })['holding'][0]['long_avail_qty']
                 except IndexError:
                     position = 0
-                except RequestTimeout as err:
-                    print(f'Get position request timeout {err}, retry...')
-                    continue
                 return int(position)
             elif direction == 'short':
                 try:
@@ -308,9 +301,6 @@ class FutureArbitrageur(okex3):
                     })['holding'][0]['short_avail_qty']
                 except IndexError:
                     position = 0
-                except RequestTimeout as err:
-                    print(f'Get position request timeout {err}, retry...')
-                    continue
                 return int(position)
             elif direction == 'both':
                 try:
@@ -320,24 +310,20 @@ class FutureArbitrageur(okex3):
                     return list(map(int, (position['long_avail_qty'], position['short_avail_qty'])))
                 except IndexError:
                     return [0, 0]
-                except RequestTimeout as err:
-                    print(f'Get position request timeout {err}, retry...')
-                    continue
             else:
                 raise TypeError('你特么逗我？输入long或者short!')
 
+    @handle_ddos_protection
+    @http_exception_logger
     def _get_account_equity(self, *, instrument_id: str) -> float:
         trade_currency = '-'.join(instrument_id.split('-')[0:2])
-        while True:
-            try:
-                account_equity = self.futuresGetAccountsCurrency({
-                    'currency': trade_currency
-                })['equity']
-                return float(account_equity)
-            except RequestTimeout as err:
-                print(f'get account equity request timeout {err}, retyr...')
-                continue
+        account_equity = self.futuresGetAccountsCurrency({
+            'currency': trade_currency
+        })['equity']
+        return float(account_equity)
 
+    @handle_ddos_protection
+    @http_exception_logger
     def _place_order(self, *, instrument_id: str, direction: int, size: int, price: float, order_type: int = 2):
         '''
         :param instrument_id:
@@ -346,20 +332,15 @@ class FutureArbitrageur(okex3):
         :param order_type: 参数填数字，0：普通委托（order type不填或填0都是普通委托） 1：只做Maker（Post only） 2：全部成交或立即取消（FOK） 3：立即成交并取消剩余（IOC）
         :return: order_id
         '''
-        while True:
-            try:
-                order_info = self.futuresPostOrder({
-                    'instrument_id': instrument_id,
-                    'type': direction,  # 1:开多2:开空3:平多4:平空
-                    'order_type': order_type,
-                    # 参数填数字，0：普通委托（order type不填或填0都是普通委托） 1：只做Maker（Post only） 2：全部成交或立即取消（FOK） 3：立即成交并取消剩余（IOC）
-                    'price': price,
-                    'size': size
-                })['order_id']
-                return order_info
-            except RequestTimeout as err:
-                print(f'place order request timeout {err}, retry...')
-                continue
+        order_info = self.futuresPostOrder({
+            'instrument_id': instrument_id,
+            'type': direction,  # 1:开多2:开空3:平多4:平空
+            'order_type': order_type,
+            # 参数填数字，0：普通委托（order type不填或填0都是普通委托） 1：只做Maker（Post only） 2：全部成交或立即取消（FOK） 3：立即成交并取消剩余（IOC）
+            'price': price,
+            'size': size
+        })['order_id']
+        return order_info
 
     def _close_position_FOK(self, *, instrument_id: str, direction: int, size: int, price: float, order_type: int = 2):
         '''
@@ -701,112 +682,172 @@ class FutureArbitrageur(okex3):
         today = datetime.date.today()
         nearest_friday = today + datetime.timedelta(days=(4 - today.weekday()) % 7)
         nearest_friday_delivery_time = datetime.datetime.combine(nearest_friday, datetime.time(8, 0))
-        expiring_contract_date = nearest_friday
-        recent_contract_date = nearest_friday
-        # 如果还没到这周五交割时间， 以及还没到周三， 那么就完成了
-        if nearest_friday_delivery_time > utcnow and today.weekday() < 2:
-            pass
-        # 如果没到这周五交割时间， 但是已经到了周三， 那么就要把当周变成次周
-        elif nearest_friday_delivery_time > utcnow and today.weekday() >= 2:
-            nearest_friday += datetime.timedelta(days=7)
-            recent_contract_date = nearest_friday
-        elif nearest_friday_delivery_time < utcnow and today.weekday() >= 2:
-            nearest_friday += datetime.timedelta(days=7)
-            expiring_contract_date = nearest_friday
-            recent_contract_date = nearest_friday
-        next_week_contract_date = recent_contract_date + datetime.timedelta(days=7)
-        self.expiring_contract = expiring_contract_date.strftime(stem + "%y%m%d")
-        self.recent_contract = recent_contract_date.strftime(stem + "%y%m%d")
-        self.next_week_contract = next_week_contract_date.strftime(stem + '%y%m%d')
-        print(f'将要过期合约{self.expiring_contract}，'
-              f'当周合约{self.recent_contract}，'
-              f'次周合约{self.next_week_contract}，'
-              f'季度合约{self.distant_contract}')
-        return
+        # 第一次定义
+        if self.recent_contract is None and self.next_week_contract is None:
+            # 如果还没到这周五交割时间， 以及还没到周三， 那么就完成了
+            if nearest_friday_delivery_time > utcnow:
+                recent_contract_date = nearest_friday
+            elif nearest_friday_delivery_time < utcnow:
+                recent_contract_date = nearest_friday + datetime.timedelta(days=7)
+            else:
+                raise ValueError('逻辑有误')
+            self.recent_contract = recent_contract_date.strftime(stem + "%y%m%d")
+            # 初步生成当周合约后重新检查当周合约是否有持仓
+            today = datetime.date.today()
+            nearest_friday = today + datetime.timedelta(days=(4 - today.weekday()) % 7)
+            nearest_friday_delivery_time = datetime.datetime.combine(nearest_friday, datetime.time(8, 0))
+            for apiKey, secret, password in zip(self.apiKeys_lst, self.secret_lst, self.password_lst):
+                self.apiKey = apiKey
+                self.secret = secret
+                self.password = password
+                # 如果还没到这周五交割时间， 以及还没到周三， 那么就完成了
+                if nearest_friday_delivery_time > utcnow and today.weekday() in (5, 6, 0, 1):
+                    recent_contract_date = nearest_friday
+                # 如果没到这周五交割时间， 但是已经到了周三, 而且当周不持仓， 就把当周变成下周， 不再在当周下单了
+                elif nearest_friday_delivery_time > utcnow and today.weekday() in (2, 3, 4) and \
+                    self._get_contract_holding_number(instrument_id=self.recent_contract,
+                                                      direction='long') == 0 and \
+                    self._get_contract_holding_number(instrument_id=self.recent_contract,
+                                                      direction='short') == 0:
+                    recent_contract_date = nearest_friday + datetime.timedelta(days=7)
+                # 如果没到周五交割时间， 但是已经到了周三， 但是当周有持仓， 那就不要变， 继续保持原样
+                elif nearest_friday_delivery_time > utcnow and today.weekday() in (2, 3, 4) and \
+                    self._get_contract_holding_number(instrument_id=self.recent_contract,
+                                                      direction='long') != 0 or \
+                    self._get_contract_holding_number(instrument_id=self.recent_contract,
+                                                      direction='short') != 0:
+                    recent_contract_date = nearest_friday
+                    break
+                elif nearest_friday_delivery_time < utcnow:
+                    recent_contract_date = nearest_friday + datetime.timedelta(days=7)
+                else:
+                    raise ValueError('老哥， 这个update contract函数好像有点问题， 来看一看')
+            next_week_contract_date = recent_contract_date + datetime.timedelta(days=7)
+            self.recent_contract = recent_contract_date.strftime(stem + "%y%m%d")
+            self.next_week_contract = next_week_contract_date.strftime(stem + '%y%m%d')
+            print(f'当周合约{self.recent_contract}，'
+                  f'次周合约{self.next_week_contract}，'
+                  f'季度合约{self.distant_contract}')
+            return
+        # 以后所有更新都从此开始
+        else:
+            for apiKey, secret, password in zip(self.apiKeys_lst, self.secret_lst, self.password_lst):
+                self.apiKey = apiKey
+                self.secret = secret
+                self.password = password
+                # 如果还没到这周五交割时间， 以及还没到周三， 那么就完成了
+                if nearest_friday_delivery_time > utcnow and today.weekday() in (5, 6, 0, 1):
+                    recent_contract_date = nearest_friday
+                # 如果没到这周五交割时间， 但是已经到了周三, 而且当周不持仓， 就把当周变成下周， 不再在当周下单了
+                elif nearest_friday_delivery_time > utcnow and today.weekday() in (2, 3, 4) and \
+                    self._get_contract_holding_number(instrument_id=self.recent_contract,
+                                                      direction='long') == 0 and \
+                    self._get_contract_holding_number(instrument_id=self.recent_contract,
+                                                      direction='short') == 0:
+                    recent_contract_date = nearest_friday + datetime.timedelta(days=7)
+                # 如果每到周五交割时间， 但是已经到了周三， 但是当周有持仓， 那就不要变， 继续保持原样
+                elif nearest_friday_delivery_time > utcnow and today.weekday() in (2, 3, 4) and \
+                    self._get_contract_holding_number(instrument_id=self.recent_contract,
+                                                      direction='long') != 0 or \
+                    self._get_contract_holding_number(instrument_id=self.recent_contract,
+                                                      direction='short') != 0:
+                    recent_contract_date = nearest_friday
+                    break
+                elif nearest_friday_delivery_time < utcnow:
+                    recent_contract_date = nearest_friday + datetime.timedelta(days=7)
+                else:
+                    raise ValueError('老哥， 这个update contract函数好像有点问题， 来看一看')
+            next_week_contract_date = recent_contract_date + datetime.timedelta(days=7)
+            self.recent_contract = recent_contract_date.strftime(stem + "%y%m%d")
+            self.next_week_contract = next_week_contract_date.strftime(stem + '%y%m%d')
+            print(f'当周合约{self.recent_contract}，'
+                  f'次周合约{self.next_week_contract}，'
+                  f'季度合约{self.distant_contract}')
+            return
 
-    def expiring_contract_rollover(self):
+    def recent_contract_rollover(self):
         while True:
             utcnow = datetime.datetime.utcnow()
             # 每周五当周合约交割以前rollover
-            if utcnow.weekday() == 4 and utcnow.hour == 7 and 56 <= utcnow.minute <= 59:
-                for apiKey, secret, password in zip(self.apiKeys_lst, self.secret_lst, self.password_lst):
+            # if utcnow.weekday() == 4 and utcnow.hour == 7 and 56 <= utcnow.minute <= 59:
+            if False:
+                for account, (apiKey, secret, password) in enumerate(zip(self.apiKeys_lst, self.secret_lst, self.password_lst)):
                     pool = ThreadPool()
                     self.apiKey = apiKey
                     self.secret = secret
                     self.password = password
                     #
-                    expiring_contract_long_position = self._get_contract_holding_number(instrument_id=self.expiring_contract, direction='long')
-                    expiring_contract_short_position = self._get_contract_holding_number(instrument_id=self.expiring_contract, direction='short')
+                    recent_contract_long_position = self._get_contract_holding_number(instrument_id=self.recent_contract, direction='long')
+                    recent_contract_short_position = self._get_contract_holding_number(instrument_id=self.recent_contract, direction='short')
                     # 在做空价差
-                    if expiring_contract_long_position != 0 and expiring_contract_short_position != 0:
-                        expiring_contract_position_info = self._get_position_info(instrument_id=self.expiring_contract)
-                        expiring_contract_long_avg_cost = float(expiring_contract_position_info['long_avg_cost'])
-                        expiring_contract_short_avg_cost = float(expiring_contract_position_info['short_avg_cost'])
-                        expiring_contract_long_coin_equivalent = self.contract_value * expiring_contract_long_position / expiring_contract_long_avg_cost
-                        expiring_contract_hedge_coin_equivalent = self.contract_value * expiring_contract_short_position / expiring_contract_short_avg_cost
-                        expiring_contract_ticker = self._fetch_futures_ticker(instrument_id=self.expiring_contract)
-                        expiring_contract_best_bid = float(expiring_contract_ticker['best_bid'])
-                        expiring_contract_best_ask = float(expiring_contract_ticker['best_ask'])
+                    if recent_contract_long_position != 0 and recent_contract_short_position != 0:
+                        recent_contract_position_info = self._get_position_info(instrument_id=self.recent_contract)
+                        recent_contract_long_avg_cost = float(recent_contract_position_info['long_avg_cost'])
+                        recent_contract_short_avg_cost = float(recent_contract_position_info['short_avg_cost'])
+                        recent_contract_long_coin_equivalent = self.contract_value * recent_contract_long_position / recent_contract_long_avg_cost
+                        recent_contract_hedge_coin_equivalent = self.contract_value * recent_contract_short_position / recent_contract_short_avg_cost
+                        recent_contract_ticker = self._fetch_futures_ticker(instrument_id=self.recent_contract)
+                        recent_contract_best_bid = float(recent_contract_ticker['best_bid'])
+                        recent_contract_best_ask = float(recent_contract_ticker['best_ask'])
                         pool.apply_async(func=self._close_position_FOK, kwds={
-                            'instrument_id': self.expiring_contract,
+                            'instrument_id': self.recent_contract,
                             'direction': 4,
-                            'size': expiring_contract_short_position,
-                            'price': expiring_contract_best_ask * 1.01
+                            'size': recent_contract_short_position,
+                            'price': recent_contract_best_ask * 1.01
                         }, error_callback=self.error_callback)
                         pool.apply_async(func=self._close_position_FOK, kwds={
-                            'instrument_id': self.expiring_contract,
+                            'instrument_id': self.recent_contract,
                             'direction': 3,
-                            'size': expiring_contract_long_position,
-                            'price': expiring_contract_best_bid * 0.99
+                            'size': recent_contract_long_position,
+                            'price': recent_contract_best_bid * 0.99
                         }, error_callback=self.error_callback)
-                        next_contract_ticker = self._fetch_futures_ticker(instrument_id=self.recent_contract)
+                        next_contract_ticker = self._fetch_futures_ticker(instrument_id=self.next_week_contract)
                         next_contract_best_bid = float(next_contract_ticker['best_bid'])
                         next_contract_best_ask = float(next_contract_ticker['best_ask'])
                         next_contract_last_price = float(next_contract_ticker['last'])
-                        recent_long_size = round(expiring_contract_long_coin_equivalent * next_contract_last_price/ self.contract_value)
-                        recent_hedge_size = round(expiring_contract_hedge_coin_equivalent * next_contract_last_price / self.contract_value)
+                        recent_long_size = round(recent_contract_long_coin_equivalent * next_contract_last_price/ self.contract_value)
+                        recent_hedge_size = round(recent_contract_hedge_coin_equivalent * next_contract_last_price / self.contract_value)
                         pool.apply_async(func=self._open_position_FOK, kwds={
-                            'instrument_id': self.recent_contract,
+                            'instrument_id': self.next_week_contract,
                             'direction': 1,
                             'size': recent_long_size,
                             'price': next_contract_best_ask * 1.01
                         }, error_callback=self.error_callback)
                         pool.apply_async(func=self._open_position_FOK, kwds={
-                            'instrument_id': self.recent_contract,
+                            'instrument_id': self.next_week_contract,
                             'direction': 2,
                             'size': recent_hedge_size,
                             'price': next_contract_best_bid * 0.99
                         }, error_callback=self.error_callback)
                     # 在做多价差
-                    elif expiring_contract_long_position == 0 and expiring_contract_short_position != 0:
-                        expiring_contract_position_info = self._get_position_info(instrument_id=self.expiring_contract)
-                        expiring_contract_short_avg_cost = float(expiring_contract_position_info['short_avg_cost'])
-                        expiring_contract_short_coin_equivalent = self.contract_value * expiring_contract_short_position / expiring_contract_short_avg_cost
-                        expiring_contract_ticker = self._fetch_futures_ticker(instrument_id=self.expiring_contract)
-                        expiring_contract_best_ask = float(expiring_contract_ticker['best_ask'])
+                    elif recent_contract_long_position == 0 and recent_contract_short_position != 0:
+                        recent_contract_position_info = self._get_position_info(instrument_id=self.recent_contract)
+                        recent_contract_short_avg_cost = float(recent_contract_position_info['short_avg_cost'])
+                        recent_contract_short_coin_equivalent = self.contract_value * recent_contract_short_position / recent_contract_short_avg_cost
+                        recent_contract_ticker = self._fetch_futures_ticker(instrument_id=self.recent_contract)
+                        recent_contract_best_ask = float(recent_contract_ticker['best_ask'])
                         pool.apply_async(func=self._close_position_FOK, kwds={
-                            'instrument_id': self.expiring_contract,
+                            'instrument_id': self.recent_contract,
                             'direction': 4,
-                            'size': expiring_contract_short_position,
-                            'price': expiring_contract_best_ask * 1.01
+                            'size': recent_contract_short_position,
+                            'price': recent_contract_best_ask * 1.01
                         }, error_callback=self.error_callback)
-                        next_contract_ticker = self._fetch_futures_ticker(instrument_id=self.recent_contract)
+                        next_contract_ticker = self._fetch_futures_ticker(instrument_id=self.next_week_contract)
                         next_contract_best_bid = float(next_contract_ticker['best_bid'])
                         next_contract_last_price = float(next_contract_ticker['last'])
-                        recent_short_size = round(expiring_contract_short_coin_equivalent * next_contract_last_price / self.contract_value)
+                        recent_short_size = round(recent_contract_short_coin_equivalent * next_contract_last_price / self.contract_value)
                         pool.apply_async(func=self._open_position_FOK, kwds={
-                            'instrument_id': self.recent_contract,
+                            'instrument_id': self.next_week_contract,
                             'direction': 2,
                             'size': recent_short_size,
                             'price': next_contract_best_bid * 0.99
                         }, error_callback=self.error_callback)
                     pool.close()
                     pool.join()
-                    print('rollover 完成')
+                    print(f'account {account} 的, rollover 完成')
             else:
                 print('rollover，没到时间')
                 time.sleep(60)
-                # 每60秒更新一次合约信息
                 self.synthesize_n_update_contracts()
 
     @staticmethod
